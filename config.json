@@ -1,0 +1,9 @@
+{
+    "window_title": "请在此输入目标窗口标题",
+    "check_interval": 60,
+    "scroll_count": 3,
+    "click_delay": 0.5,
+    "confidence_threshold": 0.8,
+    "templates_dir": "templates",
+    "log_file": "auto_thanks.log"
+}

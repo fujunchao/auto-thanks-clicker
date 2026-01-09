@@ -1,0 +1,8 @@
+# Template images directory
+# Place the following template images here:
+# - thanks_button.png      # "谢谢"按钮模板
+# - thanked_button.png     # "已感谢"按钮模板
+# - divider_line.png       # 分界线模板
+# - tab_likes.png          # "赞"标签模板
+# - tab_follows.png        # "关注"标签模板
+# - tab_indicator.png      # "+X"新消息指示器模板（可选）

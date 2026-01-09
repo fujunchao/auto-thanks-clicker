@@ -1,0 +1,15 @@
+# Core dependencies
+opencv-python>=4.8.0
+pyautogui>=0.9.54
+pywin32>=306
+pystray>=0.19.5
+Pillow>=10.0.0
+apscheduler>=3.10.4
+
+# Testing dependencies
+pytest>=7.4.0
+hypothesis>=6.92.0
+pytest-cov>=4.1.0
+
+# Packaging
+pyinstaller>=6.3.0
