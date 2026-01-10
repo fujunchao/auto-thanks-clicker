@@ -22,7 +22,7 @@ class SettingsWindow:
 
     WINDOW_TITLE = "Auto Thanks - 设置"
     WINDOW_WIDTH = 400
-    WINDOW_HEIGHT = 350
+    WINDOW_HEIGHT = 400
     PADDING = 10
 
     def __init__(
@@ -45,6 +45,7 @@ class SettingsWindow:
 
         # Entry variables
         self._window_title_var: Optional[tk.StringVar] = None
+        self._process_name_var: Optional[tk.StringVar] = None
         self._check_interval_var: Optional[tk.StringVar] = None
         self._scroll_count_var: Optional[tk.StringVar] = None
         self._click_delay_var: Optional[tk.StringVar] = None
@@ -117,6 +118,18 @@ class SettingsWindow:
         self._window_title_var = tk.StringVar(value=config.window_title)
         ttk.Entry(parent, textvariable=self._window_title_var, width=35).grid(
             row=row, column=1, sticky=tk.EW, pady=5
+        )
+        row += 1
+
+        # Process name
+        ttk.Label(parent, text="目标进程名:").grid(
+            row=row, column=0, sticky=tk.W, pady=5
+        )
+        self._process_name_var = tk.StringVar(value=config.process_name)
+        process_entry = ttk.Entry(parent, textvariable=self._process_name_var, width=35)
+        process_entry.grid(row=row, column=1, sticky=tk.EW, pady=5)
+        ttk.Label(parent, text="(如 app.exe)", foreground="gray").grid(
+            row=row, column=2, sticky=tk.W, padx=5
         )
         row += 1
 
@@ -242,6 +255,7 @@ class SettingsWindow:
 
             return Config(
                 window_title=self._window_title_var.get(),
+                process_name=self._process_name_var.get(),
                 check_interval=check_interval,
                 scroll_count=scroll_count,
                 click_delay=click_delay,
@@ -278,6 +292,7 @@ class SettingsWindow:
         if messagebox.askyesno("确认", "确定要恢复默认配置吗？"):
             default_config = self.config_manager.get_default_config()
             self._window_title_var.set(default_config.window_title)
+            self._process_name_var.set(default_config.process_name)
             self._check_interval_var.set(str(default_config.check_interval))
             self._scroll_count_var.set(str(default_config.scroll_count))
             self._click_delay_var.set(str(default_config.click_delay))

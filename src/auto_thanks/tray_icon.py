@@ -133,8 +133,11 @@ class TrayIcon:
         
         def run_scan():
             try:
-                result = self.scheduler.run_now()
+                # Skip callback to avoid duplicate notification (we show our own below)
+                result = self.scheduler.run_now(skip_callback=True)
                 message = f"扫描完成: 点击了 {result.buttons_clicked} 个按钮"
+                if result.failed_clicks > 0:
+                    message += f", {result.failed_clicks} 个验证失败"
                 if result.errors:
                     message += f", {len(result.errors)} 个错误"
                 self.show_notification("Auto Thanks", message)

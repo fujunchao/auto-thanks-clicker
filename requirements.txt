@@ -5,6 +5,7 @@ pywin32>=306
 pystray>=0.19.5
 Pillow>=10.0.0
 apscheduler>=3.10.4
+psutil>=5.9.0
 
 # Testing dependencies
 pytest>=7.4.0

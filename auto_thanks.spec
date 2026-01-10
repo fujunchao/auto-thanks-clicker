@@ -75,6 +75,8 @@ a = Analysis(
         'win32gui',
         'win32ui',
         'win32process',
+        # psutil for process name matching
+        'psutil',
         # Standard library
         'json',
         'logging',

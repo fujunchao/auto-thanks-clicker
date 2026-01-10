@@ -103,12 +103,16 @@ def setup_mock_win32(registry: MockWindowRegistry):
     def mock_is_iconic(hwnd):
         return False
     
+    def mock_is_window(hwnd):
+        return hwnd in registry.windows
+    
     mock_win32gui.EnumWindows = mock_enum_windows
     mock_win32gui.GetWindowText = mock_get_window_text
     mock_win32gui.IsWindowVisible = mock_is_window_visible
     mock_win32gui.GetWindowRect = mock_get_window_rect
     mock_win32gui.FindWindow = mock_find_window
     mock_win32gui.IsIconic = mock_is_iconic
+    mock_win32gui.IsWindow = mock_is_window
 
 
 
@@ -304,3 +308,453 @@ def test_reset_clears_hwnd():
     capture.reset()
     
     assert capture.hwnd is None
+
+
+class TestFindWindowMinimized:
+    """Tests for find_window with minimized window support.
+    
+    Validates: Requirements 1.4
+    """
+
+    def test_find_window_includes_minimized_by_default(self):
+        """Test that find_window includes minimized windows by default."""
+        registry = MockWindowRegistry()
+        # Add a minimized (not visible) window
+        hwnd = registry.add_window("Minimized Window", (0, 0, 100, 100), visible=False)
+        setup_mock_win32(registry)
+        
+        capture = WindowCapture("Minimized Window")
+        found = capture.find_window(include_minimized=True)
+        
+        assert found == hwnd
+
+    def test_find_window_excludes_minimized_when_requested(self):
+        """Test that find_window can exclude minimized windows."""
+        registry = MockWindowRegistry()
+        # Add a minimized (not visible) window
+        registry.add_window("Minimized Window", (0, 0, 100, 100), visible=False)
+        setup_mock_win32(registry)
+        
+        capture = WindowCapture("Minimized Window")
+        found = capture.find_window(include_minimized=False)
+        
+        assert found is None
+
+
+class TestWaitForVisible:
+    """Tests for wait_for_visible method.
+    
+    Validates: Requirements 1.4
+    """
+
+    @patch('time.sleep')
+    @patch('time.time')
+    def test_wait_for_visible_returns_true_when_already_visible(self, mock_time, mock_sleep):
+        """Test wait_for_visible returns True immediately when window is visible."""
+        registry = MockWindowRegistry()
+        registry.add_window("Test Window", (0, 0, 100, 100), visible=True)
+        setup_mock_win32(registry)
+        
+        mock_time.return_value = 0
+        
+        capture = WindowCapture("Test Window")
+        capture.find_window()
+        
+        result = capture.wait_for_visible(timeout=30.0)
+        
+        assert result is True
+        # Should not have slept since window was already visible
+        mock_sleep.assert_not_called()
+
+    @patch('time.sleep')
+    @patch('time.time')
+    def test_wait_for_visible_waits_until_visible(self, mock_time, mock_sleep):
+        """Test wait_for_visible waits until window becomes visible."""
+        registry = MockWindowRegistry()
+        hwnd = registry.add_window("Test Window", (0, 0, 100, 100), visible=False)
+        setup_mock_win32(registry)
+        
+        # Simulate time passing: 0, 0.5, 1.0, 1.5 seconds
+        mock_time.side_effect = [0, 0, 0.5, 0.5, 1.0, 1.0, 1.5, 1.5]
+        
+        capture = WindowCapture("Test Window")
+        capture.find_window()
+        
+        # Make window visible after some iterations
+        call_count = [0]
+        original_is_visible = mock_win32gui.IsWindowVisible
+        def mock_is_visible_delayed(h):
+            call_count[0] += 1
+            if call_count[0] >= 3:
+                return True
+            return False
+        mock_win32gui.IsWindowVisible = mock_is_visible_delayed
+        
+        result = capture.wait_for_visible(timeout=30.0, poll_interval=0.5)
+        
+        assert result is True
+
+    @patch('time.sleep')
+    @patch('time.time')
+    def test_wait_for_visible_timeout(self, mock_time, mock_sleep):
+        """Test wait_for_visible returns False on timeout."""
+        registry = MockWindowRegistry()
+        registry.add_window("Test Window", (0, 0, 100, 100), visible=False)
+        setup_mock_win32(registry)
+        
+        # Simulate time passing beyond timeout - need enough values for all time.time() calls
+        time_values = [0]  # start_time
+        for i in range(100):  # Enough iterations
+            time_values.append(31)  # Always past timeout
+        mock_time.side_effect = time_values
+        
+        capture = WindowCapture("Test Window")
+        capture.find_window()
+        
+        result = capture.wait_for_visible(timeout=30.0, poll_interval=0.5)
+        
+        assert result is False
+
+    @patch('time.sleep')
+    @patch('time.time')
+    def test_wait_for_visible_window_not_found(self, mock_time, mock_sleep):
+        """Test wait_for_visible returns False when window not found."""
+        registry = MockWindowRegistry()
+        setup_mock_win32(registry)
+        
+        # Simulate time passing beyond timeout - need enough values for all time.time() calls
+        time_values = [0]  # start_time
+        for i in range(100):  # Enough iterations
+            time_values.append(31)  # Always past timeout
+        mock_time.side_effect = time_values
+        
+        capture = WindowCapture("NonExistent Window")
+        
+        result = capture.wait_for_visible(timeout=30.0, poll_interval=0.5)
+        
+        assert result is False
+
+
+# Mock win32process and psutil for process name tests
+mock_win32process = MagicMock()
+mock_psutil = MagicMock()
+
+sys.modules['win32process'] = mock_win32process
+sys.modules['psutil'] = mock_psutil
+
+# Patch the module-level references for process name support
+window_capture_module.win32process = mock_win32process
+window_capture_module.psutil = mock_psutil
+
+
+class MockProcessRegistry:
+    """Simulates a registry of processes and their windows for testing."""
+    
+    def __init__(self):
+        self.windows: Dict[int, Tuple[str, Tuple[int, int, int, int], bool, int, str]] = {}
+        # hwnd -> (title, rect, visible, pid, process_name)
+        self._next_hwnd = 1000
+        self._next_pid = 100
+    
+    def add_window(
+        self, 
+        title: str, 
+        rect: Tuple[int, int, int, int], 
+        visible: bool = True,
+        process_name: str = "unknown.exe"
+    ) -> int:
+        """Add a window to the registry and return its hwnd."""
+        hwnd = self._next_hwnd
+        pid = self._next_pid
+        self._next_hwnd += 1
+        self._next_pid += 1
+        self.windows[hwnd] = (title, rect, visible, pid, process_name)
+        return hwnd
+    
+    def get_title(self, hwnd: int) -> str:
+        if hwnd in self.windows:
+            return self.windows[hwnd][0]
+        return ""
+    
+    def get_rect(self, hwnd: int) -> Optional[Tuple[int, int, int, int]]:
+        if hwnd in self.windows:
+            return self.windows[hwnd][1]
+        return None
+    
+    def is_visible(self, hwnd: int) -> bool:
+        if hwnd in self.windows:
+            return self.windows[hwnd][2]
+        return False
+    
+    def get_pid(self, hwnd: int) -> int:
+        if hwnd in self.windows:
+            return self.windows[hwnd][3]
+        return 0
+    
+    def get_process_name(self, hwnd: int) -> str:
+        if hwnd in self.windows:
+            return self.windows[hwnd][4]
+        return ""
+
+
+def setup_mock_win32_with_process(registry: MockProcessRegistry):
+    """Configure win32gui and win32process mocks to use the registry."""
+    
+    def mock_enum_windows(callback, results):
+        for hwnd in registry.windows.keys():
+            callback(hwnd, results)
+        return True
+    
+    def mock_get_window_text(hwnd):
+        return registry.get_title(hwnd)
+    
+    def mock_is_window_visible(hwnd):
+        return registry.is_visible(hwnd)
+    
+    def mock_get_window_rect(hwnd):
+        rect = registry.get_rect(hwnd)
+        if rect is None:
+            raise Exception("Invalid window handle")
+        return rect
+    
+    def mock_find_window(class_name, title):
+        for hwnd, (t, _, v, _, _) in registry.windows.items():
+            if title and title in t and v:
+                return hwnd
+        return 0
+    
+    def mock_is_iconic(hwnd):
+        return False
+    
+    def mock_is_window(hwnd):
+        return hwnd in registry.windows
+    
+    def mock_get_window_thread_process_id(hwnd):
+        pid = registry.get_pid(hwnd)
+        return (0, pid)  # (thread_id, process_id)
+    
+    mock_win32gui.EnumWindows = mock_enum_windows
+    mock_win32gui.GetWindowText = mock_get_window_text
+    mock_win32gui.IsWindowVisible = mock_is_window_visible
+    mock_win32gui.GetWindowRect = mock_get_window_rect
+    mock_win32gui.FindWindow = mock_find_window
+    mock_win32gui.IsIconic = mock_is_iconic
+    mock_win32gui.IsWindow = mock_is_window
+    mock_win32process.GetWindowThreadProcessId = mock_get_window_thread_process_id
+    
+    # Setup psutil mock
+    class MockProcess:
+        def __init__(self, pid):
+            self.pid = pid
+            # Find process name from registry
+            for hwnd, (_, _, _, p, pname) in registry.windows.items():
+                if p == pid:
+                    self._name = pname
+                    return
+            self._name = "unknown.exe"
+        
+        def name(self):
+            return self._name
+    
+    mock_psutil.Process = MockProcess
+    mock_psutil.NoSuchProcess = Exception
+    mock_psutil.AccessDenied = Exception
+
+
+class TestFindWindowByProcess:
+    """Tests for find_window_by_process method.
+    
+    Validates: Requirements 1.1
+    """
+
+    def test_find_window_by_process_exact_match(self):
+        """Test finding window by exact process name."""
+        registry = MockProcessRegistry()
+        hwnd = registry.add_window(
+            "Notepad - Untitled", 
+            (0, 0, 800, 600), 
+            visible=True,
+            process_name="notepad.exe"
+        )
+        setup_mock_win32_with_process(registry)
+        
+        capture = WindowCapture(process_name="notepad.exe")
+        found = capture.find_window_by_process()
+        
+        assert found == hwnd
+
+    def test_find_window_by_process_partial_match(self):
+        """Test finding window by partial process name (case-insensitive)."""
+        registry = MockProcessRegistry()
+        hwnd = registry.add_window(
+            "My App Window", 
+            (0, 0, 800, 600), 
+            visible=True,
+            process_name="MyApplication.exe"
+        )
+        setup_mock_win32_with_process(registry)
+        
+        # Should match with partial, case-insensitive name
+        capture = WindowCapture(process_name="myapplication")
+        found = capture.find_window_by_process()
+        
+        assert found == hwnd
+
+    def test_find_window_by_process_not_found(self):
+        """Test that find_window_by_process returns None when process not found."""
+        registry = MockProcessRegistry()
+        registry.add_window(
+            "Other App", 
+            (0, 0, 800, 600), 
+            visible=True,
+            process_name="other.exe"
+        )
+        setup_mock_win32_with_process(registry)
+        
+        capture = WindowCapture(process_name="nonexistent.exe")
+        found = capture.find_window_by_process()
+        
+        assert found is None
+
+    def test_find_window_by_process_includes_minimized(self):
+        """Test that find_window_by_process includes minimized windows by default."""
+        registry = MockProcessRegistry()
+        hwnd = registry.add_window(
+            "Minimized App", 
+            (0, 0, 800, 600), 
+            visible=False,  # Minimized
+            process_name="minimized.exe"
+        )
+        setup_mock_win32_with_process(registry)
+        
+        capture = WindowCapture(process_name="minimized.exe")
+        found = capture.find_window_by_process(include_minimized=True)
+        
+        assert found == hwnd
+
+    def test_find_window_by_process_excludes_minimized(self):
+        """Test that find_window_by_process can exclude minimized windows."""
+        registry = MockProcessRegistry()
+        registry.add_window(
+            "Minimized App", 
+            (0, 0, 800, 600), 
+            visible=False,  # Minimized
+            process_name="minimized.exe"
+        )
+        setup_mock_win32_with_process(registry)
+        
+        capture = WindowCapture(process_name="minimized.exe")
+        found = capture.find_window_by_process(include_minimized=False)
+        
+        assert found is None
+
+    def test_find_window_by_process_empty_name(self):
+        """Test that find_window_by_process returns None for empty process name."""
+        registry = MockProcessRegistry()
+        registry.add_window(
+            "Some App", 
+            (0, 0, 800, 600), 
+            visible=True,
+            process_name="app.exe"
+        )
+        setup_mock_win32_with_process(registry)
+        
+        capture = WindowCapture(process_name="")
+        found = capture.find_window_by_process()
+        
+        assert found is None
+
+
+class TestFindWindowWithProcessFallback:
+    """Tests for find_window with process name fallback.
+    
+    Validates: Requirements 1.1
+    """
+
+    def test_find_window_prefers_title_over_process(self):
+        """Test that find_window prefers title match over process match."""
+        registry = MockProcessRegistry()
+        hwnd_title = registry.add_window(
+            "Target Window", 
+            (0, 0, 800, 600), 
+            visible=True,
+            process_name="other.exe"
+        )
+        hwnd_process = registry.add_window(
+            "Different Window", 
+            (100, 100, 900, 700), 
+            visible=True,
+            process_name="target.exe"
+        )
+        setup_mock_win32_with_process(registry)
+        
+        # Should find by title first
+        capture = WindowCapture(window_title="Target Window", process_name="target.exe")
+        found = capture.find_window()
+        
+        assert found == hwnd_title
+
+    def test_find_window_falls_back_to_process(self):
+        """Test that find_window falls back to process name when title not found."""
+        registry = MockProcessRegistry()
+        hwnd = registry.add_window(
+            "Some Window", 
+            (0, 0, 800, 600), 
+            visible=True,
+            process_name="target.exe"
+        )
+        setup_mock_win32_with_process(registry)
+        
+        # Title won't match, should fall back to process name
+        capture = WindowCapture(window_title="NonExistent Title", process_name="target.exe")
+        found = capture.find_window()
+        
+        assert found == hwnd
+
+    def test_find_window_with_only_process_name(self):
+        """Test that find_window works with only process name specified."""
+        registry = MockProcessRegistry()
+        hwnd = registry.add_window(
+            "App Window", 
+            (0, 0, 800, 600), 
+            visible=True,
+            process_name="myapp.exe"
+        )
+        setup_mock_win32_with_process(registry)
+        
+        capture = WindowCapture(process_name="myapp.exe")
+        found = capture.find_window()
+        
+        assert found == hwnd
+
+    def test_find_window_returns_none_when_neither_match(self):
+        """Test that find_window returns None when neither title nor process match."""
+        registry = MockProcessRegistry()
+        registry.add_window(
+            "Other Window", 
+            (0, 0, 800, 600), 
+            visible=True,
+            process_name="other.exe"
+        )
+        setup_mock_win32_with_process(registry)
+        
+        capture = WindowCapture(window_title="NonExistent", process_name="nonexistent.exe")
+        found = capture.find_window()
+        
+        assert found is None
+
+    def test_find_window_with_no_criteria(self):
+        """Test that find_window returns None when no criteria specified."""
+        registry = MockProcessRegistry()
+        registry.add_window(
+            "Some Window", 
+            (0, 0, 800, 600), 
+            visible=True,
+            process_name="app.exe"
+        )
+        setup_mock_win32_with_process(registry)
+        
+        capture = WindowCapture()  # No title or process name
+        found = capture.find_window()
+        
+        assert found is None

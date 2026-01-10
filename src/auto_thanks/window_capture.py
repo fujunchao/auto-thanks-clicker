@@ -1,7 +1,7 @@
 """Window capture module for locating and capturing screenshots of target windows."""
 
 import logging
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 
 import numpy as np
 
@@ -10,6 +10,8 @@ try:
     import win32ui
     import win32con
     import win32api
+    import win32process
+    import psutil
     from ctypes import windll
 except ImportError:
     # Allow module to be imported on non-Windows for testing
@@ -17,6 +19,8 @@ except ImportError:
     win32ui = None
     win32con = None
     win32api = None
+    win32process = None
+    psutil = None
     windll = None
 
 logger = logging.getLogger(__name__)
@@ -25,19 +29,85 @@ logger = logging.getLogger(__name__)
 class WindowCapture:
     """窗口捕获模块，负责定位和截图目标窗口"""
 
-    def __init__(self, window_title: str):
+    def __init__(self, window_title: str = "", process_name: str = ""):
         """
         初始化窗口捕获器
 
         Args:
             window_title: 目标窗口标题（支持部分匹配）
+            process_name: 目标进程名（支持部分匹配，如 "notepad.exe"）
         """
         self.window_title = window_title
+        self.process_name = process_name
         self._hwnd: Optional[int] = None
 
-    def find_window(self) -> Optional[int]:
+    def find_window_by_process(self, include_minimized: bool = True) -> Optional[int]:
         """
-        查找目标窗口
+        通过进程名查找窗口
+
+        Args:
+            include_minimized: 是否包含最小化窗口（默认True）
+
+        Returns:
+            窗口句柄 (HWND)，未找到返回 None
+        """
+        if win32gui is None or win32process is None or psutil is None:
+            logger.error("win32gui/win32process/psutil not available - Windows only feature")
+            return None
+
+        if not self.process_name:
+            return None
+
+        def enum_callback(hwnd: int, results: list) -> bool:
+            """枚举窗口回调函数"""
+            try:
+                # Get process ID for this window
+                _, pid = win32process.GetWindowThreadProcessId(hwnd)
+                
+                # Get process name
+                try:
+                    process = psutil.Process(pid)
+                    proc_name = process.name()
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    return True
+                
+                # Check if process name matches (case-insensitive partial match)
+                if self.process_name.lower() in proc_name.lower():
+                    # Check visibility based on include_minimized flag
+                    if include_minimized:
+                        if win32gui.IsWindow(hwnd):
+                            # Only include windows with a title (main windows)
+                            if win32gui.GetWindowText(hwnd):
+                                results.append(hwnd)
+                    else:
+                        if win32gui.IsWindowVisible(hwnd):
+                            if win32gui.GetWindowText(hwnd):
+                                results.append(hwnd)
+            except Exception as e:
+                logger.debug(f"Error checking window {hwnd}: {e}")
+            return True
+
+        results: list = []
+        try:
+            win32gui.EnumWindows(enum_callback, results)
+        except Exception as e:
+            logger.error(f"Error enumerating windows by process: {e}")
+            return None
+
+        if results:
+            self._hwnd = results[0]
+            logger.info(f"Found window by process: {self.process_name} (hwnd={self._hwnd})")
+            return self._hwnd
+
+        logger.warning(f"Window not found for process: {self.process_name}")
+        return None
+
+    def find_window(self, include_minimized: bool = True) -> Optional[int]:
+        """
+        查找目标窗口（支持标题或进程名匹配）
+
+        Args:
+            include_minimized: 是否包含最小化窗口（默认True）
 
         Returns:
             窗口句柄 (HWND)，未找到返回 None
@@ -46,37 +116,62 @@ class WindowCapture:
             logger.error("win32gui not available - Windows only feature")
             return None
 
-        def enum_callback(hwnd: int, results: list) -> bool:
-            """枚举窗口回调函数"""
-            if win32gui.IsWindowVisible(hwnd):
+        # First try to find by window title if provided
+        if self.window_title:
+            def enum_callback(hwnd: int, results: list) -> bool:
+                """枚举窗口回调函数"""
                 title = win32gui.GetWindowText(hwnd)
                 if self.window_title and self.window_title in title:
-                    results.append(hwnd)
-            return True
+                    # Check visibility based on include_minimized flag
+                    if include_minimized:
+                        # Include window if it exists (even if minimized)
+                        # IsWindow checks if handle is valid
+                        if win32gui.IsWindow(hwnd):
+                            results.append(hwnd)
+                    else:
+                        # Only include visible, non-minimized windows
+                        if win32gui.IsWindowVisible(hwnd):
+                            results.append(hwnd)
+                return True
 
-        results: list = []
-        try:
-            win32gui.EnumWindows(enum_callback, results)
-        except Exception as e:
-            logger.error(f"Error enumerating windows: {e}")
-            return None
+            results: list = []
+            try:
+                win32gui.EnumWindows(enum_callback, results)
+            except Exception as e:
+                logger.error(f"Error enumerating windows: {e}")
+                # Don't return yet, try process name matching
 
-        if results:
-            self._hwnd = results[0]
-            logger.info(f"Found window: {self.window_title} (hwnd={self._hwnd})")
-            return self._hwnd
-
-        # Try exact match with FindWindow
-        try:
-            hwnd = win32gui.FindWindow(None, self.window_title)
-            if hwnd:
-                self._hwnd = hwnd
-                logger.info(f"Found window (exact match): {self.window_title} (hwnd={self._hwnd})")
+            if results:
+                self._hwnd = results[0]
+                logger.info(f"Found window by title: {self.window_title} (hwnd={self._hwnd})")
                 return self._hwnd
-        except Exception as e:
-            logger.error(f"Error finding window: {e}")
 
-        logger.warning(f"Window not found: {self.window_title}")
+            # Try exact match with FindWindow
+            try:
+                hwnd = win32gui.FindWindow(None, self.window_title)
+                if hwnd:
+                    self._hwnd = hwnd
+                    logger.info(f"Found window (exact match): {self.window_title} (hwnd={self._hwnd})")
+                    return self._hwnd
+            except Exception as e:
+                logger.error(f"Error finding window: {e}")
+
+        # If title matching failed or no title provided, try process name matching
+        if self.process_name:
+            result = self.find_window_by_process(include_minimized)
+            if result:
+                return result
+
+        # Log appropriate warning
+        if self.window_title and self.process_name:
+            logger.warning(f"Window not found by title '{self.window_title}' or process '{self.process_name}'")
+        elif self.window_title:
+            logger.warning(f"Window not found: {self.window_title}")
+        elif self.process_name:
+            logger.warning(f"Window not found for process: {self.process_name}")
+        else:
+            logger.warning("No window title or process name specified")
+        
         return None
 
     def get_window_rect(self) -> Optional[Tuple[int, int, int, int]]:
@@ -252,3 +347,37 @@ class WindowCapture:
     def reset(self) -> None:
         """重置窗口句柄，强制下次重新查找"""
         self._hwnd = None
+
+    def wait_for_visible(self, timeout: float = 30.0, poll_interval: float = 0.5) -> bool:
+        """
+        等待窗口变为可见状态
+
+        Args:
+            timeout: 超时时间（秒），默认30秒
+            poll_interval: 轮询间隔（秒），默认0.5秒
+
+        Returns:
+            True 如果窗口在超时前变为可见，否则 False
+        """
+        import time
+        
+        start_time = time.time()
+        
+        while time.time() - start_time < timeout:
+            # First ensure we have a window handle
+            hwnd = self._hwnd or self.find_window(include_minimized=True)
+            if not hwnd:
+                logger.debug("Window not found, waiting...")
+                time.sleep(poll_interval)
+                continue
+            
+            # Check if window is visible
+            if self.is_window_visible():
+                logger.info(f"Window is now visible (hwnd={hwnd})")
+                return True
+            
+            logger.debug(f"Window not visible yet, waiting... (elapsed: {time.time() - start_time:.1f}s)")
+            time.sleep(poll_interval)
+        
+        logger.error(f"Timeout waiting for window to become visible after {timeout}s")
+        return False

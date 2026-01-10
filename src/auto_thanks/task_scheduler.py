@@ -1,7 +1,7 @@
 """Task Scheduler module for periodic execution of auto-thanks tasks."""
 
 import logging
-from typing import Optional
+from typing import Callable, Optional
 from datetime import datetime
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -31,7 +31,8 @@ class TaskScheduler:
     def __init__(
         self, 
         orchestrator: TaskOrchestrator, 
-        interval_minutes: int = 60
+        interval_minutes: int = 60,
+        on_scan_complete: Optional[Callable[[ScanResult], None]] = None
     ):
         """
         初始化调度器
@@ -39,12 +40,14 @@ class TaskScheduler:
         Args:
             orchestrator: 任务协调器
             interval_minutes: 检查间隔（分钟），默认60分钟
+            on_scan_complete: 扫描完成后的回调函数，接收 ScanResult 参数
         """
         self.orchestrator = orchestrator
         self._interval_minutes = self._validate_interval(interval_minutes)
         self._scheduler: Optional[BackgroundScheduler] = None
         self._running = False
         self._last_result: Optional[ScanResult] = None
+        self._on_scan_complete = on_scan_complete
 
     def _validate_interval(self, minutes: int) -> int:
         """
@@ -104,15 +107,18 @@ class TaskScheduler:
         self._running = False
         logger.info("Scheduler stopped")
 
-    def run_now(self) -> ScanResult:
+    def run_now(self, skip_callback: bool = False) -> ScanResult:
         """
         立即执行一次扫描
+
+        Args:
+            skip_callback: 是否跳过扫描完成回调（用于手动执行时避免重复通知）
 
         Returns:
             扫描结果
         """
         logger.info("Running scan immediately")
-        return self._execute_scan()
+        return self._execute_scan(skip_callback=skip_callback)
 
     def set_interval(self, minutes: int) -> None:
         """
@@ -167,9 +173,12 @@ class TaskScheduler:
         """
         return self._last_result
 
-    def _execute_scan(self) -> ScanResult:
+    def _execute_scan(self, skip_callback: bool = False) -> ScanResult:
         """
         执行扫描任务
+
+        Args:
+            skip_callback: 是否跳过扫描完成回调
 
         Returns:
             扫描结果
@@ -181,9 +190,16 @@ class TaskScheduler:
             self._last_result = result
             
             logger.info(
-                f"Scan completed: {result.buttons_clicked} buttons clicked, "
-                f"{len(result.errors)} errors"
+                f"Scan completed: {result.buttons_clicked} buttons clicked "
+                f"({result.failed_clicks} failed), {len(result.errors)} errors"
             )
+            
+            # Call the scan complete callback if set and not skipped
+            if self._on_scan_complete and not skip_callback:
+                try:
+                    self._on_scan_complete(result)
+                except Exception as e:
+                    logger.error(f"Error in scan complete callback: {e}")
             
             return result
         except Exception as e:
@@ -194,4 +210,21 @@ class TaskScheduler:
                 errors=[str(e)]
             )
             self._last_result = error_result
+            
+            # Call the scan complete callback even on error (unless skipped)
+            if self._on_scan_complete and not skip_callback:
+                try:
+                    self._on_scan_complete(error_result)
+                except Exception as cb_error:
+                    logger.error(f"Error in scan complete callback: {cb_error}")
+            
             return error_result
+
+    def set_on_scan_complete(self, callback: Optional[Callable[[ScanResult], None]]) -> None:
+        """
+        设置扫描完成回调函数
+
+        Args:
+            callback: 扫描完成后的回调函数，接收 ScanResult 参数
+        """
+        self._on_scan_complete = callback

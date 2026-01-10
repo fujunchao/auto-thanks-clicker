@@ -159,6 +159,15 @@ def test_property_5_thanks_vs_thanked_classification(thanks_positions, thanked_p
         thanked_path = os.path.join(temp_dir, "thanked_button.png")
         cv2.imwrite(thanked_path, thanked_template)
 
+        # Create required tab templates (different colors to avoid false matches)
+        tab_likes_template = np.ones((template_h, template_w, 3), dtype=np.uint8) * 255
+        tab_likes_template[2:-2, 2:-2] = (128, 0, 128)  # Purple fill
+        cv2.imwrite(os.path.join(temp_dir, "tab_likes.png"), tab_likes_template)
+        
+        tab_follows_template = np.ones((template_h, template_w, 3), dtype=np.uint8) * 255
+        tab_follows_template[2:-2, 2:-2] = (0, 128, 128)  # Teal fill
+        cv2.imwrite(os.path.join(temp_dir, "tab_follows.png"), tab_follows_template)
+
         # Draw thanks buttons on screenshot
         for x, y in thanks_positions:
             if y + template_h <= img_height and x + template_w <= img_width:
@@ -221,6 +230,20 @@ def test_property_3_template_matching_completeness(num_templates, positions):
     with tempfile.TemporaryDirectory() as temp_dir:
         template_path = os.path.join(temp_dir, "test_template.png")
         cv2.imwrite(template_path, template)
+        
+        # Create required templates (different from test template)
+        thanks_template = np.ones((25, 50, 3), dtype=np.uint8) * 255
+        thanks_template[2:-2, 2:-2] = (255, 0, 0)  # Blue
+        thanked_template = np.ones((25, 50, 3), dtype=np.uint8) * 255
+        thanked_template[2:-2, 2:-2] = (0, 255, 0)  # Green
+        tab_likes_template = np.ones((25, 50, 3), dtype=np.uint8) * 255
+        tab_likes_template[2:-2, 2:-2] = (128, 0, 128)  # Purple
+        tab_follows_template = np.ones((25, 50, 3), dtype=np.uint8) * 255
+        tab_follows_template[2:-2, 2:-2] = (0, 128, 128)  # Teal
+        cv2.imwrite(os.path.join(temp_dir, "thanks_button.png"), thanks_template)
+        cv2.imwrite(os.path.join(temp_dir, "thanked_button.png"), thanked_template)
+        cv2.imwrite(os.path.join(temp_dir, "tab_likes.png"), tab_likes_template)
+        cv2.imwrite(os.path.join(temp_dir, "tab_follows.png"), tab_follows_template)
         
         # Filter positions to ensure templates fit and don't overlap
         valid_positions = []
@@ -290,10 +313,74 @@ def test_find_template_with_nonexistent_template():
 
 
 def test_load_templates_with_nonexistent_directory():
-    """Test that load_templates handles missing directory gracefully."""
+    """Test that load_templates raises TemplateDirectoryError for missing directory."""
+    from src.auto_thanks.image_recognizer import TemplateDirectoryError
+    
     recognizer = ImageRecognizer(templates_dir="nonexistent_dir_12345", confidence_threshold=0.8)
-    templates = recognizer.load_templates()
-    assert templates == {}
+    
+    with pytest.raises(TemplateDirectoryError) as exc_info:
+        recognizer.load_templates()
+    
+    # Verify error message contains helpful information
+    error_msg = str(exc_info.value)
+    assert "nonexistent_dir_12345" in error_msg
+    assert "thanks_button.png" in error_msg
+    assert "thanked_button.png" in error_msg
+
+
+def test_load_templates_missing_tab_templates():
+    """Test that load_templates raises TemplateDirectoryError when tab templates are missing."""
+    from src.auto_thanks.image_recognizer import TemplateDirectoryError
+    
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Create only thanks and thanked templates, but not tab templates
+        thanks_template = np.ones((25, 50, 3), dtype=np.uint8) * 255
+        thanks_template[2:-2, 2:-2] = (255, 0, 0)
+        thanked_template = np.ones((25, 50, 3), dtype=np.uint8) * 255
+        thanked_template[2:-2, 2:-2] = (0, 255, 0)
+        
+        cv2.imwrite(os.path.join(temp_dir, "thanks_button.png"), thanks_template)
+        cv2.imwrite(os.path.join(temp_dir, "thanked_button.png"), thanked_template)
+        
+        recognizer = ImageRecognizer(templates_dir=temp_dir, confidence_threshold=0.8)
+        
+        with pytest.raises(TemplateDirectoryError) as exc_info:
+            recognizer.load_templates()
+        
+        # Verify error message mentions missing tab templates
+        error_msg = str(exc_info.value)
+        assert "tab_likes.png" in error_msg
+        assert "tab_follows.png" in error_msg
+
+
+def test_load_templates_missing_only_tab_follows():
+    """Test that load_templates raises TemplateDirectoryError when only tab_follows is missing."""
+    from src.auto_thanks.image_recognizer import TemplateDirectoryError
+    
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Create all required templates except tab_follows
+        template = np.ones((25, 50, 3), dtype=np.uint8) * 255
+        
+        cv2.imwrite(os.path.join(temp_dir, "thanks_button.png"), template)
+        cv2.imwrite(os.path.join(temp_dir, "thanked_button.png"), template)
+        cv2.imwrite(os.path.join(temp_dir, "tab_likes.png"), template)
+        # Intentionally NOT creating tab_follows.png
+        
+        recognizer = ImageRecognizer(templates_dir=temp_dir, confidence_threshold=0.8)
+        
+        with pytest.raises(TemplateDirectoryError) as exc_info:
+            recognizer.load_templates()
+        
+        error_msg = str(exc_info.value)
+        # The "缺少必需的模板文件" section should only list tab_follows.png
+        # Split by "【必需模板】" to get the missing templates section
+        parts = error_msg.split("【必需模板】")
+        missing_section = parts[0] if len(parts) > 1 else error_msg
+        
+        assert "tab_follows.png" in missing_section
+        # tab_likes.png exists, so it should NOT be in the "缺少" (missing) section
+        # But it will appear in the "【必需模板】" reference section
+        assert "缺少" in missing_section and "tab_follows.png" in missing_section
 
 
 def test_find_divider_line_returns_none_when_not_found():
@@ -329,3 +416,207 @@ def test_confidence_threshold_clamping():
     # Test valid value
     recognizer = ImageRecognizer(templates_dir="templates", confidence_threshold=0.75)
     assert recognizer.confidence_threshold == 0.75
+
+
+# Tests for tab indicator detection (Task 18)
+
+def test_find_tab_indicators_returns_empty_when_not_found():
+    """Test that find_tab_indicators returns empty list when no indicators found."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        recognizer = ImageRecognizer(templates_dir=temp_dir, confidence_threshold=0.8)
+        screenshot = np.zeros((100, 100, 3), dtype=np.uint8)
+        
+        result = recognizer.find_tab_indicators(screenshot)
+        assert result == []
+
+
+def test_find_tab_indicators_uses_correct_template():
+    """Test that find_tab_indicators uses TEMPLATE_TAB_INDICATOR constant."""
+    # Create a test image with indicator template
+    img_height, img_width = 200, 200
+    screenshot = np.ones((img_height, img_width, 3), dtype=np.uint8) * 255
+    
+    # Create indicator template
+    template_h, template_w = 20, 30
+    indicator_template = np.ones((template_h, template_w, 3), dtype=np.uint8) * 255
+    indicator_template[2:-2, 2:-2] = (0, 128, 255)  # Orange fill
+    
+    # Create required templates
+    thanks_template = np.ones((25, 50, 3), dtype=np.uint8) * 255
+    thanks_template[2:-2, 2:-2] = (255, 0, 0)  # Blue
+    thanked_template = np.ones((25, 50, 3), dtype=np.uint8) * 255
+    thanked_template[2:-2, 2:-2] = (0, 255, 0)  # Green
+    tab_likes_template = np.ones((25, 50, 3), dtype=np.uint8) * 255
+    tab_likes_template[2:-2, 2:-2] = (128, 0, 128)  # Purple
+    tab_follows_template = np.ones((25, 50, 3), dtype=np.uint8) * 255
+    tab_follows_template[2:-2, 2:-2] = (0, 128, 128)  # Teal
+    
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Save required templates
+        cv2.imwrite(os.path.join(temp_dir, "thanks_button.png"), thanks_template)
+        cv2.imwrite(os.path.join(temp_dir, "thanked_button.png"), thanked_template)
+        cv2.imwrite(os.path.join(temp_dir, "tab_likes.png"), tab_likes_template)
+        cv2.imwrite(os.path.join(temp_dir, "tab_follows.png"), tab_follows_template)
+        
+        # Save as tab_indicator.png
+        indicator_path = os.path.join(temp_dir, "tab_indicator.png")
+        cv2.imwrite(indicator_path, indicator_template)
+        
+        # Place indicator on screenshot
+        x, y = 50, 30
+        screenshot[y:y+template_h, x:x+template_w] = indicator_template
+        
+        recognizer = ImageRecognizer(templates_dir=temp_dir, confidence_threshold=0.95)
+        recognizer.load_templates()
+        
+        results = recognizer.find_tab_indicators(screenshot)
+        
+        assert len(results) == 1
+        assert results[0].template_name == "tab_indicator.png"
+
+
+def test_get_tabs_with_indicators_returns_false_when_no_tabs():
+    """Test get_tabs_with_indicators returns all False when no tabs found."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        recognizer = ImageRecognizer(templates_dir=temp_dir, confidence_threshold=0.8)
+        screenshot = np.zeros((100, 100, 3), dtype=np.uint8)
+        
+        result = recognizer.get_tabs_with_indicators(screenshot)
+        
+        assert result == {"赞": False, "关注": False}
+
+
+def test_get_tabs_with_indicators_returns_false_when_no_indicators():
+    """Test get_tabs_with_indicators returns all False when no indicators found."""
+    img_height, img_width = 200, 400
+    screenshot = np.ones((img_height, img_width, 3), dtype=np.uint8) * 255
+    
+    # Create tab templates
+    template_h, template_w = 25, 50
+    tab_likes = np.ones((template_h, template_w, 3), dtype=np.uint8) * 255
+    tab_likes[2:-2, 2:-2] = (255, 0, 0)  # Blue
+    
+    tab_follows = np.ones((template_h, template_w, 3), dtype=np.uint8) * 255
+    tab_follows[2:-2, 2:-2] = (0, 255, 0)  # Green
+    
+    # Create required templates
+    thanks_template = np.ones((25, 50, 3), dtype=np.uint8) * 255
+    thanks_template[2:-2, 2:-2] = (255, 128, 0)  # Different color
+    thanked_template = np.ones((25, 50, 3), dtype=np.uint8) * 255
+    thanked_template[2:-2, 2:-2] = (128, 255, 0)  # Different color
+    
+    with tempfile.TemporaryDirectory() as temp_dir:
+        cv2.imwrite(os.path.join(temp_dir, "tab_likes.png"), tab_likes)
+        cv2.imwrite(os.path.join(temp_dir, "tab_follows.png"), tab_follows)
+        cv2.imwrite(os.path.join(temp_dir, "thanks_button.png"), thanks_template)
+        cv2.imwrite(os.path.join(temp_dir, "thanked_button.png"), thanked_template)
+        
+        # Place tabs on screenshot
+        screenshot[30:30+template_h, 50:50+template_w] = tab_likes
+        screenshot[30:30+template_h, 150:150+template_w] = tab_follows
+        
+        recognizer = ImageRecognizer(templates_dir=temp_dir, confidence_threshold=0.95)
+        recognizer.load_templates()
+        
+        result = recognizer.get_tabs_with_indicators(screenshot)
+        
+        assert result == {"赞": False, "关注": False}
+
+
+def test_get_tabs_with_indicators_detects_indicator_near_tab():
+    """Test get_tabs_with_indicators detects indicator positioned near a tab."""
+    img_height, img_width = 200, 400
+    screenshot = np.ones((img_height, img_width, 3), dtype=np.uint8) * 255
+    
+    # Create templates
+    tab_h, tab_w = 25, 50
+    indicator_h, indicator_w = 15, 25
+    
+    tab_likes = np.ones((tab_h, tab_w, 3), dtype=np.uint8) * 255
+    tab_likes[2:-2, 2:-2] = (255, 0, 0)  # Blue
+    
+    tab_follows = np.ones((tab_h, tab_w, 3), dtype=np.uint8) * 255
+    tab_follows[2:-2, 2:-2] = (0, 255, 0)  # Green
+    
+    indicator = np.ones((indicator_h, indicator_w, 3), dtype=np.uint8) * 255
+    indicator[2:-2, 2:-2] = (0, 128, 255)  # Orange
+    
+    # Create required templates
+    thanks_template = np.ones((25, 50, 3), dtype=np.uint8) * 255
+    thanks_template[2:-2, 2:-2] = (255, 128, 128)  # Different color
+    thanked_template = np.ones((25, 50, 3), dtype=np.uint8) * 255
+    thanked_template[2:-2, 2:-2] = (128, 255, 128)  # Different color
+    
+    with tempfile.TemporaryDirectory() as temp_dir:
+        cv2.imwrite(os.path.join(temp_dir, "tab_likes.png"), tab_likes)
+        cv2.imwrite(os.path.join(temp_dir, "tab_follows.png"), tab_follows)
+        cv2.imwrite(os.path.join(temp_dir, "tab_indicator.png"), indicator)
+        cv2.imwrite(os.path.join(temp_dir, "thanks_button.png"), thanks_template)
+        cv2.imwrite(os.path.join(temp_dir, "thanked_button.png"), thanked_template)
+        
+        # Place tabs on screenshot
+        likes_x, likes_y = 50, 30
+        follows_x, follows_y = 150, 30
+        screenshot[likes_y:likes_y+tab_h, likes_x:likes_x+tab_w] = tab_likes
+        screenshot[follows_y:follows_y+tab_h, follows_x:follows_x+tab_w] = tab_follows
+        
+        # Place indicator near "赞" tab (to the right)
+        ind_x = likes_x + tab_w + 5  # 5 pixels to the right of tab
+        ind_y = likes_y + 5  # Slightly below top of tab
+        screenshot[ind_y:ind_y+indicator_h, ind_x:ind_x+indicator_w] = indicator
+        
+        recognizer = ImageRecognizer(templates_dir=temp_dir, confidence_threshold=0.95)
+        recognizer.load_templates()
+        
+        result = recognizer.get_tabs_with_indicators(screenshot)
+        
+        assert result["赞"] is True
+        assert result["关注"] is False
+
+
+def test_get_tabs_with_indicators_ignores_distant_indicator():
+    """Test get_tabs_with_indicators ignores indicators too far from tabs."""
+    img_height, img_width = 200, 400
+    screenshot = np.ones((img_height, img_width, 3), dtype=np.uint8) * 255
+    
+    # Create templates
+    tab_h, tab_w = 25, 50
+    indicator_h, indicator_w = 15, 25
+    
+    tab_likes = np.ones((tab_h, tab_w, 3), dtype=np.uint8) * 255
+    tab_likes[2:-2, 2:-2] = (255, 0, 0)  # Blue
+    
+    tab_follows = np.ones((tab_h, tab_w, 3), dtype=np.uint8) * 255
+    tab_follows[2:-2, 2:-2] = (0, 255, 0)  # Green
+    
+    indicator = np.ones((indicator_h, indicator_w, 3), dtype=np.uint8) * 255
+    indicator[2:-2, 2:-2] = (0, 128, 255)  # Orange
+    
+    # Create required templates
+    thanks_template = np.ones((25, 50, 3), dtype=np.uint8) * 255
+    thanks_template[2:-2, 2:-2] = (255, 128, 128)  # Different color
+    thanked_template = np.ones((25, 50, 3), dtype=np.uint8) * 255
+    thanked_template[2:-2, 2:-2] = (128, 255, 128)  # Different color
+    
+    with tempfile.TemporaryDirectory() as temp_dir:
+        cv2.imwrite(os.path.join(temp_dir, "tab_likes.png"), tab_likes)
+        cv2.imwrite(os.path.join(temp_dir, "tab_follows.png"), tab_follows)
+        cv2.imwrite(os.path.join(temp_dir, "tab_indicator.png"), indicator)
+        cv2.imwrite(os.path.join(temp_dir, "thanks_button.png"), thanks_template)
+        cv2.imwrite(os.path.join(temp_dir, "thanked_button.png"), thanked_template)
+        
+        # Place tab on screenshot
+        likes_x, likes_y = 50, 30
+        screenshot[likes_y:likes_y+tab_h, likes_x:likes_x+tab_w] = tab_likes
+        
+        # Place indicator far from tab (more than 100 pixels to the right)
+        ind_x = likes_x + 150  # Too far
+        ind_y = likes_y
+        screenshot[ind_y:ind_y+indicator_h, ind_x:ind_x+indicator_w] = indicator
+        
+        recognizer = ImageRecognizer(templates_dir=temp_dir, confidence_threshold=0.95)
+        recognizer.load_templates()
+        
+        result = recognizer.get_tabs_with_indicators(screenshot)
+        
+        assert result["赞"] is False

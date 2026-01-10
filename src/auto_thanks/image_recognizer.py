@@ -16,6 +16,15 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+class TemplateDirectoryError(Exception):
+    """Exception raised when the templates directory is missing or invalid.
+    
+    This exception is raised during startup if the templates directory
+    does not exist, prompting the user to prepare the required template images.
+    """
+    pass
+
+
 class ImageRecognizer:
     """图像识别模块，使用模板匹配识别UI元素"""
 
@@ -25,6 +34,28 @@ class ImageRecognizer:
     TEMPLATE_DIVIDER = "divider_line.png"
     TEMPLATE_TAB_LIKES = "tab_likes.png"
     TEMPLATE_TAB_FOLLOWS = "tab_follows.png"
+    TEMPLATE_TAB_INDICATOR = "tab_indicator.png"
+    
+    # Required templates that must exist for the app to function
+    # - thanks_button.png and thanked_button.png: Core button recognition (Requirements 3.1, 3.4)
+    # - tab_likes.png and tab_follows.png: Tab switching functionality (Requirements 2.1)
+    REQUIRED_TEMPLATES = [
+        TEMPLATE_THANKS, 
+        TEMPLATE_THANKED,
+        TEMPLATE_TAB_LIKES,
+        TEMPLATE_TAB_FOLLOWS,
+    ]
+    
+    # Optional templates that enhance functionality but are not required:
+    # - divider_line.png: Used to filter buttons above the divider line (Requirement 3.2)
+    #   If missing, all visible buttons are processed per Requirement 3.5:
+    #   "IF no Divider_Line is found, THEN THE Image_Recognizer SHALL process all visible Thanks_Buttons"
+    # - tab_indicator.png: Used to detect "+X" indicators for tab prioritization (Requirement 2.2)
+    #   If missing, tabs are processed in default order without prioritization
+    OPTIONAL_TEMPLATES = [
+        TEMPLATE_DIVIDER,
+        TEMPLATE_TAB_INDICATOR,
+    ]
 
     def __init__(self, templates_dir: str, confidence_threshold: float = 0.8):
         """
@@ -44,12 +75,27 @@ class ImageRecognizer:
 
         Returns:
             模板名称到图像数组的映射
+            
+        Raises:
+            TemplateDirectoryError: 如果模板目录不存在
         """
         self._templates = {}
 
         if not os.path.isdir(self.templates_dir):
-            logger.warning(f"Templates directory not found: {self.templates_dir}")
-            return self._templates
+            error_msg = (
+                f"模板目录不存在: {self.templates_dir}\n\n"
+                f"请准备以下模板图片并放入该目录:\n\n"
+                f"【必需模板】(缺少任何一个将无法启动):\n"
+                f"  - thanks_button.png (谢谢按钮)\n"
+                f"  - thanked_button.png (已感谢按钮)\n"
+                f"  - tab_likes.png (赞标签)\n"
+                f"  - tab_follows.png (关注标签)\n\n"
+                f"【可选模板】(缺少时使用降级功能):\n"
+                f"  - divider_line.png (分界线) - 缺少时处理所有可见按钮\n"
+                f"  - tab_indicator.png (+X指示器) - 缺少时按默认顺序处理标签"
+            )
+            logger.error(f"Templates directory not found: {self.templates_dir}")
+            raise TemplateDirectoryError(error_msg)
 
         for filename in os.listdir(self.templates_dir):
             if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp')):
@@ -62,6 +108,43 @@ class ImageRecognizer:
                     logger.warning(f"Failed to load template: {filepath}")
 
         logger.info(f"Loaded {len(self._templates)} templates")
+        
+        # Verify required templates exist
+        missing_templates = []
+        for required in self.REQUIRED_TEMPLATES:
+            if required not in self._templates:
+                missing_templates.append(required)
+        
+        if missing_templates:
+            # List all required templates with descriptions for clarity
+            required_list = (
+                f"  - {self.TEMPLATE_THANKS} (谢谢按钮) - 必需\n"
+                f"  - {self.TEMPLATE_THANKED} (已感谢按钮) - 必需\n"
+                f"  - {self.TEMPLATE_TAB_LIKES} (赞标签) - 必需\n"
+                f"  - {self.TEMPLATE_TAB_FOLLOWS} (关注标签) - 必需"
+            )
+            optional_list = (
+                f"  - {self.TEMPLATE_DIVIDER} (分界线) - 可选，缺少时处理所有可见按钮\n"
+                f"  - {self.TEMPLATE_TAB_INDICATOR} (+X指示器) - 可选，缺少时按默认顺序处理标签"
+            )
+            error_msg = (
+                f"缺少必需的模板文件:\n"
+                f"  - " + "\n  - ".join(missing_templates) + "\n\n"
+                f"【必需模板】:\n{required_list}\n\n"
+                f"【可选模板】:\n{optional_list}\n\n"
+                f"请将模板图片放入目录: {self.templates_dir}"
+            )
+            logger.error(f"Missing required templates: {missing_templates}")
+            raise TemplateDirectoryError(error_msg)
+        
+        # Log info about optional templates
+        for optional in self.OPTIONAL_TEMPLATES:
+            if optional not in self._templates:
+                if optional == self.TEMPLATE_DIVIDER:
+                    logger.info(f"Optional template '{optional}' not found - will process all visible buttons")
+                elif optional == self.TEMPLATE_TAB_INDICATOR:
+                    logger.info(f"Optional template '{optional}' not found - tab prioritization disabled")
+        
         return self._templates
 
     def find_template(
@@ -210,6 +293,61 @@ class ImageRecognizer:
         if follows_matches:
             result["关注"] = max(follows_matches, key=lambda m: m.confidence)
 
+        return result
+
+    def find_tab_indicators(self, screenshot: np.ndarray) -> List[MatchResult]:
+        """
+        查找标签页上的"+X"指示器
+
+        Args:
+            screenshot: 截图图像
+
+        Returns:
+            所有"+X"指示器的匹配结果列表
+        """
+        return self.find_template(screenshot, self.TEMPLATE_TAB_INDICATOR)
+
+    def get_tabs_with_indicators(
+        self, 
+        screenshot: np.ndarray
+    ) -> Dict[str, bool]:
+        """
+        检测哪些标签页有"+X"指示器
+
+        Args:
+            screenshot: 截图图像
+
+        Returns:
+            标签名称到是否有指示器的映射 {"赞": True/False, "关注": True/False}
+        """
+        result: Dict[str, bool] = {"赞": False, "关注": False}
+        
+        # Find tab buttons first
+        tab_buttons = self.find_tab_buttons(screenshot)
+        if not tab_buttons:
+            return result
+        
+        # Find all indicators
+        indicators = self.find_tab_indicators(screenshot)
+        if not indicators:
+            return result
+        
+        # For each tab, check if there's an indicator nearby (to the right)
+        # Indicators typically appear right after the tab text
+        indicator_tolerance_x = 100  # pixels to the right of tab
+        indicator_tolerance_y = 20   # pixels vertical tolerance
+        
+        for tab_name, tab_match in tab_buttons.items():
+            for indicator in indicators:
+                # Check if indicator is to the right of tab and vertically aligned
+                x_diff = indicator.x - tab_match.x
+                y_diff = abs(indicator.y - tab_match.y)
+                
+                if 0 < x_diff < indicator_tolerance_x and y_diff < indicator_tolerance_y:
+                    result[tab_name] = True
+                    logger.debug(f"Found indicator for tab '{tab_name}' at ({indicator.x}, {indicator.y})")
+                    break
+        
         return result
 
 

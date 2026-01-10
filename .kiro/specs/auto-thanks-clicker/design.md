@@ -491,13 +491,32 @@ class TrayIcon:
 
 ```
 templates/
-├── thanks_button.png      # "谢谢"按钮模板
-├── thanked_button.png     # "已感谢"按钮模板
-├── divider_line.png       # 分界线模板
-├── tab_likes.png          # "赞"标签模板
-├── tab_follows.png        # "关注"标签模板
-└── tab_indicator.png      # "+X"新消息指示器模板（可选）
+├── thanks_button.png      # "谢谢"按钮模板 [必需]
+├── thanked_button.png     # "已感谢"按钮模板 [必需]
+├── tab_likes.png          # "赞"标签模板 [必需]
+├── tab_follows.png        # "关注"标签模板 [必需]
+├── divider_line.png       # 分界线模板 [可选]
+└── tab_indicator.png      # "+X"新消息指示器模板 [可选]
 ```
+
+#### 模板分类说明
+
+**必需模板** - 缺少任何一个将导致程序无法启动：
+- `thanks_button.png`: 核心功能，用于识别需要点击的按钮
+- `thanked_button.png`: 核心功能，用于避免重复点击已感谢的按钮
+- `tab_likes.png`: 标签切换功能，用于定位"赞"标签
+- `tab_follows.png`: 标签切换功能，用于定位"关注"标签
+
+**可选模板** - 缺少时使用降级功能：
+- `divider_line.png`: 用于识别"—以下是更早消息—"分界线
+  - 缺少时：处理所有可见的"谢谢"按钮（符合需求 3.5）
+- `tab_indicator.png`: 用于识别"+X"指示器（如"赞+1"）
+  - 缺少时：按默认顺序处理标签，不进行优先级排序
+
+**设计决策说明**：
+1. 模板目录故意为空，因为模板需要用户根据自己的屏幕分辨率和DPI设置截图准备
+2. 分界线设为可选是因为需求 3.5 明确规定了降级行为
+3. 指示器设为可选是因为标签优先级是增强功能，不影响核心点击功能
 
 ### 日志格式
 
